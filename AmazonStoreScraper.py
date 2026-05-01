@@ -130,7 +130,7 @@ def setup_driver(headless=False):
     # options.add_experimental_option("prefs", prefs)
     
     with driver_lock:
-        driver = uc.Chrome(options=options, version_main=147)
+        driver = uc.Chrome(options=options, version_main=147, headless=headless)
     return driver
 
 def extract_asin_from_url(url):
