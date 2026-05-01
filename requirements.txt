@@ -1,0 +1,8 @@
+streamlit
+pandas
+undetected-chromedriver
+selenium
+requests
+gspread
+oauth2client
+python-dotenv
