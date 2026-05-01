@@ -104,8 +104,11 @@ def get_main_keyword(title):
     logging.warning("All attempts to extract keyword failed due to API limits or errors.")
     return "None"
 
+import threading
+driver_lock = threading.Lock()
+
 def setup_driver(headless=False):
-    """Sets up Undetected Chrome WebDriver."""
+    """Sets up Undetected Chrome WebDriver with Thread-Safety."""
     options = uc.ChromeOptions()
     options.add_argument("--start-maximized")
     
@@ -126,7 +129,8 @@ def setup_driver(headless=False):
     # prefs = {"profile.managed_default_content_settings.images": 2}
     # options.add_experimental_option("prefs", prefs)
     
-    driver = uc.Chrome(options=options, version_main=147)
+    with driver_lock:
+        driver = uc.Chrome(options=options, version_main=147)
     return driver
 
 def extract_asin_from_url(url):
@@ -166,13 +170,13 @@ def set_delivery_location(driver, zip_code):
             logging.info("Opening location selector...")
             try:
                 location_button = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable((By.ID, "nav-global-location-popover-link"))
+                    EC.presence_of_element_located((By.ID, "nav-global-location-popover-link"))
                 )
-                location_button.click()
+                driver.execute_script("arguments[0].click();", location_button)
                 time.sleep(random.uniform(2, 3))
             except:
                 logging.warning(f"Could not click location button (Attempt {attempt+1}). Title: {driver.title}")
-                if "bot" in driver.title.lower() or "captcha" in driver.title.lower():
+                if "bot" in driver.title.lower() or "captcha" in driver.title.lower() or "robot" in driver.title.lower():
                     logging.error("Amazon showed Captcha/Bot block!")
                 time.sleep(5)
                 # Refresh page as a fallback
@@ -185,7 +189,7 @@ def set_delivery_location(driver, zip_code):
                 zip_input = WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.ID, "GLUXZipUpdateInput"))
                 )
-                zip_input.clear()
+                driver.execute_script("arguments[0].value = '';", zip_input)
                 time.sleep(0.5)
                 zip_input.send_keys(zip_code)
                 time.sleep(random.uniform(1, 2))
@@ -195,7 +199,7 @@ def set_delivery_location(driver, zip_code):
                 for btn_id in ["GLUXZipUpdate", "GLUXZipUpdate-announce"]:
                     try:
                         apply_button = driver.find_element(By.ID, btn_id)
-                        apply_button.click()
+                        driver.execute_script("arguments[0].click();", apply_button)
                         apply_clicked = True
                         break
                     except:
@@ -203,15 +207,18 @@ def set_delivery_location(driver, zip_code):
                 
                 if not apply_clicked:
                     # Fallback to CSS selector if IDs fail
-                    apply_button = driver.find_element(By.CSS_SELECTOR, "input[aria-labelledby='GLUXZipUpdate-announce']")
-                    apply_button.click()
+                    try:
+                        apply_button = driver.find_element(By.CSS_SELECTOR, "input[aria-labelledby='GLUXZipUpdate-announce']")
+                        driver.execute_script("arguments[0].click();", apply_button)
+                    except:
+                        pass
                     
                 time.sleep(random.uniform(4, 6))  # Longer wait after applying
                 
                 # Check for "Done" or "Continue" button
                 try:
                     done_button = driver.find_element(By.NAME, "glowDoneButton")
-                    done_button.click()
+                    driver.execute_script("arguments[0].click();", done_button)
                     time.sleep(2)
                 except:
                     pass
