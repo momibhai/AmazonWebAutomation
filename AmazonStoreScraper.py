@@ -117,6 +117,10 @@ def setup_driver(headless=False):
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--allow-running-insecure-content")
+    options.add_argument("--disable-blink-features=AutomationControlled")
         
     # Disable images for speed
     # prefs = {"profile.managed_default_content_settings.images": 2}
@@ -167,8 +171,13 @@ def set_delivery_location(driver, zip_code):
                 location_button.click()
                 time.sleep(random.uniform(2, 3))
             except:
-                logging.warning(f"Could not click location button (Attempt {attempt+1})")
+                logging.warning(f"Could not click location button (Attempt {attempt+1}). Title: {driver.title}")
+                if "bot" in driver.title.lower() or "captcha" in driver.title.lower():
+                    logging.error("Amazon showed Captcha/Bot block!")
                 time.sleep(5)
+                # Refresh page as a fallback
+                driver.get("https://www.amazon.com")
+                time.sleep(3)
                 continue
             
             # Enter zip code
