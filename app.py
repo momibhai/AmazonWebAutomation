@@ -242,16 +242,16 @@ if 'df' in st.session_state:
                     status_container.info("Initializing Browser...")
                     driver = AmazonStoreScraper.setup_driver(headless=True)
                     
-                    # Check Location
+                    # Check Location (Non-blocking - VPS IPs may be blocked by Amazon)
                     status_container.info("Setting Location to New York...")
                     if not AmazonStoreScraper.set_delivery_location(driver, "10001"):
-                         status_container.error("Failed to set location. Aborting.")
-                         driver.quit()
+                        status_container.warning("⚠️ Location set failed (Amazon may be blocking VPS IP). Proceeding anyway...")
                     else:
-                        status_container.success("Location Set! Starting Batch...")
-                        
-                        rows_to_process = range(start_row, end_row + 1)
-                        total = len(rows_to_process)
+                        status_container.success("✅ Location Set! Starting Batch...")
+                    
+                    rows_to_process = range(start_row, end_row + 1)
+                    total = len(rows_to_process)
+                    if True:
                         
                         import concurrent.futures
                         from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx

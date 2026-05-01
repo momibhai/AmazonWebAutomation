@@ -71,9 +71,9 @@ def process_single_row(row_idx, df_idx, df, webhook_url, sheet, webhook_executor
         try:
             driver = AmazonStoreScraper.setup_driver(headless=True)
             
-            # Set Location
+            # Set Location (non-blocking - Amazon may block on VPS IPs)
             if not AmazonStoreScraper.set_delivery_location(driver, "10001"):
-                raise Exception("Failed to set location")
+                logging.warning(f"[VPS] Row {row_idx}: Location set failed, proceeding with scraping anyway...")
                 
             # Scrape
             my_asin, title, keyword, comp1, comp2 = AmazonStoreScraper.process_store(driver, current_url)

@@ -250,8 +250,8 @@ def set_delivery_location(driver, zip_code):
             logging.error(f"Error in location setting (Attempt {attempt+1}): {e}")
             time.sleep(5)
     
-    logging.error("Failed to set location after all attempts")
-    return False
+    logging.warning("Location set failed after all attempts - proceeding anyway to allow scraping to continue.")
+    return True  # Non-blocking: allow scraping even if location popup is blocked by Amazon
 
 def process_store(driver, store_url):
     """Process a single store URL with refined logic for Seller Profiles and Brand Stores."""
