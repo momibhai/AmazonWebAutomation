@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM python:3.10-slim
+FROM python:3.10-slim-bullseye
 
 # Set environment variables to avoid user interaction during apt installation
 ENV DEBIAN_FRONTEND=noninteractive
