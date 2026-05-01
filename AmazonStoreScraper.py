@@ -112,6 +112,12 @@ def setup_driver(headless=False):
     if headless:
         options.add_argument("--headless=new")
         
+    # Critical arguments for Docker and Headless execution
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+        
     # Disable images for speed
     # prefs = {"profile.managed_default_content_settings.images": 2}
     # options.add_experimental_option("prefs", prefs)
