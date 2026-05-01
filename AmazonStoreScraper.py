@@ -146,13 +146,13 @@ def set_delivery_location(driver, zip_code):
     Sets delivery location to specified zip code with strict verification.
     Returns True if successful, False otherwise.
     """
-    max_attempts = 5  # Increased from 3
+    max_attempts = 2  # Fast fail - if Amazon blocks VPS IP we skip quickly
     
     for attempt in range(max_attempts):
         try:
             logging.info("Ensuring delivery location is set to 10001...")
             driver.get("https://www.amazon.com")
-            time.sleep(random.uniform(4, 6))  # Longer initial wait
+            time.sleep(random.uniform(2, 3))  # Reduced wait
             
             # Check current location
             try:
