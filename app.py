@@ -396,18 +396,6 @@ if 'df' in st.session_state:
                 except Exception as e:
                     st.error(f"VPS Automation Error: {e}")
 
-# --- Live Logs Section ---
-st.write("---")
-st.subheader("📋 Live Logs")
-with st.expander("", expanded=False):
-    if st.button("🔄 Refresh Logs"):
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "r") as f:
-                log_content = f.read()[-3000:]  # Last 3000 characters
-                st.code(log_content, language=None)
-        else:
-            st.warning("No log file found.")
-
 # ═══════════════════════════════════════════════════════════════════════════
 # MODULE 3: Scheduler (Auto Daily)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -635,3 +623,16 @@ elif mode == "📅 Scheduler (Auto Daily)":
                     st.success("History cleared.")
                     st.rerun()
 
+# ───────────────────────────────────────────────────────────────────────────
+# Live Logs (shown at bottom for all modes)
+# ───────────────────────────────────────────────────────────────────────────
+st.write("---")
+st.subheader("📋 Live Logs")
+with st.expander("", expanded=False):
+    if st.button("🔄 Refresh Logs"):
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "r") as f:
+                log_content = f.read()[-3000:]
+                st.code(log_content, language=None)
+        else:
+            st.warning("No log file found.")
