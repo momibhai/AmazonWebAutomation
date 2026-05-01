@@ -140,118 +140,59 @@ def extract_asin_from_url(url):
     if match:
         return match.group(1)
     return None
-
 def set_delivery_location(driver, zip_code):
     """
-    Sets delivery location to specified zip code with strict verification.
-    Returns True if successful, False otherwise.
+    Attempts to set delivery location. Non-blocking - returns True even on failure.
+    Amazon Datacenter IPs often block location popups so we skip gracefully.
     """
-    max_attempts = 2  # Fast fail - if Amazon blocks VPS IP we skip quickly
-    
-    for attempt in range(max_attempts):
+    try:
+        logging.info("Navigating to Amazon homepage...")
+        driver.get("https://www.amazon.com")
+        time.sleep(random.uniform(2, 3))
+        
+        # Quick check if already set
         try:
-            logging.info("Ensuring delivery location is set to 10001...")
-            driver.get("https://www.amazon.com")
-            time.sleep(random.uniform(2, 3))  # Reduced wait
+            location_elem = driver.find_element(By.ID, "glow-ingress-line2")
+            current_location = location_elem.text
+            if "New York" in current_location or "10001" in current_location:
+                logging.info("Location already set to New York 10001")
+                return True
+        except:
+            pass
+        
+        # One quick attempt to set location via JS
+        try:
+            location_button = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.ID, "nav-global-location-popover-link"))
+            )
+            driver.execute_script("arguments[0].click();", location_button)
+            time.sleep(1.5)
             
-            # Check current location
-            try:
-                location_elem = driver.find_element(By.ID, "glow-ingress-line2")
-                current_location = location_elem.text
-                logging.info(f"Current location label: {current_location}")
-                
-                if "New York" in current_location or "10001" in current_location:
-                    logging.info("Location already set to New York 10001")
-                    return True
-            except:
-                pass
+            zip_input = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.ID, "GLUXZipUpdateInput"))
+            )
+            driver.execute_script("arguments[0].value = '';", zip_input)
+            zip_input.send_keys(zip_code)
+            time.sleep(0.5)
             
-            # Open location selector
-            logging.info("Opening location selector...")
-            try:
-                location_button = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "nav-global-location-popover-link"))
-                )
-                driver.execute_script("arguments[0].click();", location_button)
-                time.sleep(random.uniform(2, 3))
-            except:
-                logging.warning(f"Could not click location button (Attempt {attempt+1}). Title: {driver.title}")
-                if "bot" in driver.title.lower() or "captcha" in driver.title.lower() or "robot" in driver.title.lower():
-                    logging.error("Amazon showed Captcha/Bot block!")
-                time.sleep(5)
-                # Refresh page as a fallback
-                driver.get("https://www.amazon.com")
-                time.sleep(3)
-                continue
-            
-            # Enter zip code
-            try:
-                zip_input = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "GLUXZipUpdateInput"))
-                )
-                driver.execute_script("arguments[0].value = '';", zip_input)
-                time.sleep(0.5)
-                zip_input.send_keys(zip_code)
-                time.sleep(random.uniform(1, 2))
-                
-                # Try multiple selectors for Apply button
-                apply_clicked = False
-                for btn_id in ["GLUXZipUpdate", "GLUXZipUpdate-announce"]:
-                    try:
-                        apply_button = driver.find_element(By.ID, btn_id)
-                        driver.execute_script("arguments[0].click();", apply_button)
-                        apply_clicked = True
-                        break
-                    except:
-                        pass
-                
-                if not apply_clicked:
-                    # Fallback to CSS selector if IDs fail
-                    try:
-                        apply_button = driver.find_element(By.CSS_SELECTOR, "input[aria-labelledby='GLUXZipUpdate-announce']")
-                        driver.execute_script("arguments[0].click();", apply_button)
-                    except:
-                        pass
-                    
-                time.sleep(random.uniform(4, 6))  # Longer wait after applying
-                
-                # Check for "Done" or "Continue" button
+            for btn_id in ["GLUXZipUpdate", "GLUXZipUpdate-announce"]:
                 try:
-                    done_button = driver.find_element(By.NAME, "glowDoneButton")
-                    driver.execute_script("arguments[0].click();", done_button)
-                    time.sleep(2)
+                    btn = driver.find_element(By.ID, btn_id)
+                    driver.execute_script("arguments[0].click();", btn)
+                    break
                 except:
                     pass
-                
-            except Exception as e:
-                logging.warning(f"Error entering zip code (Attempt {attempt+1}): {e}")
-                time.sleep(5)
-                continue
             
-            # Verify location was set
-            try:
-                driver.get("https://www.amazon.com")
-                time.sleep(random.uniform(3, 5))
-                
-                location_elem = driver.find_element(By.ID, "glow-ingress-line2")
-                new_location = location_elem.text
-                
-                if "New York" in new_location or "10001" in new_location:
-                    logging.info("SUCCESS: Location set to New York 10001‌")
-                    return True
-                else:
-                    logging.warning(f"Location not verified. Got: {new_location} (Attempt {attempt+1})")
-                    time.sleep(5)
-            except Exception as e:
-                logging.warning(f"Could not verify location (Attempt {attempt+1}): {e}")
-                time.sleep(5)
-                
+            time.sleep(2)
+            logging.info("Location attempt done.")
         except Exception as e:
-            logging.error(f"Error in location setting (Attempt {attempt+1}): {e}")
-            time.sleep(5)
+            logging.warning(f"Location popup not available (likely VPS IP block): {e}")
+            
+    except Exception as e:
+        logging.warning(f"Location setup skipped: {e}")
     
-    logging.warning("Location set failed after all attempts - proceeding anyway to allow scraping to continue.")
-    return True  # Non-blocking: allow scraping even if location popup is blocked by Amazon
+    # Always return True - location is not critical, scraping works without it
+    return True
 
 def process_store(driver, store_url):
     """Process a single store URL with refined logic for Seller Profiles and Brand Stores."""
