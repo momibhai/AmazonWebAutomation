@@ -35,7 +35,7 @@ def save_schedules(schedules):
     except Exception as e:
         logging.error(f"[Scheduler] Failed to save schedules: {e}")
 
-def add_schedule(target_date, target_time, start_row, daily_limit, concurrency, webhooks):
+def add_schedule(target_date, target_time, start_row, daily_limit, concurrency, webhooks, repeat_daily=False):
     import uuid
     schedules = load_schedules()
     job = {
@@ -47,11 +47,13 @@ def add_schedule(target_date, target_time, start_row, daily_limit, concurrency, 
         "daily_limit": daily_limit,
         "concurrency": concurrency,
         "webhooks": webhooks,
+        "repeat_daily": repeat_daily,
         "status": "Pending",
         "progress_success": 0,
         "progress_failed": 0,
         "start_time": None,
         "end_time": None,
+        "next_run": None,
         "logs": []
     }
     schedules.append(job)
@@ -233,6 +235,7 @@ def run_job(sched_id: str):
         concurrency = job["concurrency"]
         webhooks    = job["webhooks"]
         total_rows  = len(df)
+        repeat_daily = job.get("repeat_daily", False)
 
         # Build row list — exactly daily_limit valid rows (no over-submission)
         rows_to_process = []
@@ -245,6 +248,7 @@ def run_job(sched_id: str):
             if url_val and url_val.lower() not in ("nan", ""):
                 rows_to_process.append((r, df_idx))
             r += 1
+        next_start_row = r  # first unprocessed row for next day
 
         if not rows_to_process:
             update_schedule(sched_id, {"status": "Failed"})
@@ -297,6 +301,28 @@ def run_job(sched_id: str):
             })
             _append_log(sched_id, "info",
                         f"✅ Job complete. Success={final.get('progress_success',0)}, Failed={final.get('progress_failed',0)}")
+
+            # ── Auto-schedule next day if repeat_daily is enabled ──
+            if repeat_daily:
+                from datetime import date, timedelta
+                next_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+                next_time_display = datetime.strptime(job["target_time"], "%H:%M").strftime("%I:%M %p")
+                new_job = add_schedule(
+                    target_date  = next_date,
+                    target_time  = job["target_time"],
+                    start_row    = next_start_row,
+                    daily_limit  = job["daily_limit"],
+                    concurrency  = job["concurrency"],
+                    webhooks     = job["webhooks"],
+                    repeat_daily = True
+                )
+                # Mark current job with next run info
+                update_schedule(sched_id, {
+                    "next_run": f"{next_date} at {next_time_display} PKT"
+                })
+                _append_log(sched_id, "info",
+                            f"🔁 Repeat Daily ON — Next job ({new_job['id']}) scheduled for {next_date} at {next_time_display} PKT. Next start row: {next_start_row}")
+                logging.info(f"[Scheduler] Repeat Daily: created job {new_job['id']} for {next_date}")
 
     except Exception as e:
         logging.exception(f"[Scheduler] Critical error in job {sched_id}: {e}")

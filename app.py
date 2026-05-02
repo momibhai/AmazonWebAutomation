@@ -453,14 +453,26 @@ if 'df' in st.session_state:
 
                     # Use container instead of expander to avoid keyboard_arrow icon bug
                     with st.container(border=True):
-                        st.markdown(f"**🗓️ Job: {s.get('target_date')} at {display_time} PKT** &nbsp; Status: `{s.get('status')}`", unsafe_allow_html=True)
+                        # Header row: title + repeat badge
+                        repeat_badge = " &nbsp; 🔁 `Repeat Daily`" if s.get('repeat_daily') else ""
+                        st.markdown(
+                            f"**\U0001f5d3\ufe0f Job: {s.get('target_date')} at {display_time} PKT**"
+                            f" &nbsp; Status: `{s.get('status')}`{repeat_badge}",
+                            unsafe_allow_html=True
+                        )
+
+                        # Next run info (shown when job is Completed with repeat_daily)
+                        if s.get('next_run'):
+                            st.info(f"\U0001f551 Next run scheduled: **{s.get('next_run')}**")
+
                         col_info1, col_info2, col_info3 = st.columns(3)
                         col_info1.write(f"**Start Row:** {s.get('start_row')}")
                         col_info2.write(f"**Target Limit:** {s.get('daily_limit')}")
                         col_info3.write(f"**Concurrency:** {s.get('concurrency')}")
 
                         if s.get("start_time"):
-                            st.caption(f"Started: {s.get('start_time')} | Ended: {s.get('end_time') or '⌛ Running...'}")
+                            _end = s.get('end_time') or '⌛ Running...'
+                            st.caption(f"Started: {s.get('start_time')} | Ended: {_end}")
 
                         success = s.get("progress_success", 0)
                         failed = s.get("progress_failed", 0)
@@ -524,6 +536,12 @@ if 'df' in st.session_state:
                 with col_f5:
                     concurrency = st.number_input("Concurrency", min_value=1, max_value=20, value=5)
 
+                repeat_daily = st.checkbox(
+                    "\U0001f501 Repeat Daily (auto-schedule next day after completion)",
+                    value=False,
+                    help="When enabled, after today's job finishes it will automatically create tomorrow's job at the same time, continuing from the next unprocessed row."
+                )
+
                 submit = st.form_submit_button("💾 Save Schedule")
                 if submit:
                     if not selected_webhooks:
@@ -532,14 +550,16 @@ if 'df' in st.session_state:
                         date_str = target_date.strftime("%Y-%m-%d")
                         time_str = f"{h24:02d}:{mnt}"
                         scheduler_module.add_schedule(
-                            date_str, 
-                            time_str, 
-                            start_row, 
-                            daily_limit, 
-                            concurrency, 
-                            selected_webhooks
+                            date_str,
+                            time_str,
+                            start_row,
+                            daily_limit,
+                            concurrency,
+                            selected_webhooks,
+                            repeat_daily=repeat_daily
                         )
-                        st.success(f"Schedule added for {date_str} at {time_str} PKT")
+                        repeat_msg = " (Repeat Daily ON \U0001f501)" if repeat_daily else ""
+                        st.success(f"Schedule added for {date_str} at {hr12}:{mnt} {ampm} PKT{repeat_msg}")
                         st.rerun()
 
 # ───────────────────────────────────────────────────────────────────────────
