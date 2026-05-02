@@ -416,15 +416,24 @@ if 'df' in st.session_state:
             # Start the background daemon if not already running
             scheduler_module.start_daemon_if_needed()
 
-            # Auto-refresh every 5s ONLY when a job is Running (avoids full-page flash)
+            # Hide Material Icon text (keyboard_arrow_*) that leaks when font fails to load
+            st.markdown("""
+            <style>
+            details summary {list-style:none}
+            details > summary::-webkit-details-marker {display:none}
+            details > summary::marker {display:none;content:''}
+            </style>
+            """, unsafe_allow_html=True)
+
+            # Auto-refresh only when a job is Running
             schedules_live = scheduler_module.load_schedules()
             any_running = any(s.get("status") == "Running" for s in schedules_live)
             if any_running:
                 import time as _time
-                refresh_placeholder = st.empty()
-                refresh_placeholder.caption("🔄 Auto-refreshing live logs every 5s...")
+                _refresh = st.empty()
+                _refresh.caption("🔄 Auto-refreshing live logs every 5s...")
                 _time.sleep(5)
-                refresh_placeholder.empty()
+                _refresh.empty()
                 st.rerun()
 
             st.markdown("### 📋 Scheduled Jobs")
@@ -435,27 +444,27 @@ if 'df' in st.session_state:
                 st.info("No active schedules. Create one below!")
             else:
                 for s in schedules:
-                    # Convert 24h to AM/PM for display
                     try:
                         from datetime import datetime as _dt
                         t_obj = _dt.strptime(s.get('target_time'), "%H:%M")
                         display_time = t_obj.strftime("%I:%M %p")
-                    except:
+                    except Exception:
                         display_time = s.get('target_time')
-                        
-                    with st.expander(f"Job: {s.get('target_date')} at {display_time} PKT | Status: {s.get('status')}", expanded=True):
+
+                    # Use container instead of expander to avoid keyboard_arrow icon bug
+                    with st.container(border=True):
+                        st.markdown(f"**🗓️ Job: {s.get('target_date')} at {display_time} PKT** &nbsp; Status: `{s.get('status')}`", unsafe_allow_html=True)
                         col_info1, col_info2, col_info3 = st.columns(3)
                         col_info1.write(f"**Start Row:** {s.get('start_row')}")
                         col_info2.write(f"**Target Limit:** {s.get('daily_limit')}")
                         col_info3.write(f"**Concurrency:** {s.get('concurrency')}")
 
                         if s.get("start_time"):
-                            st.caption(f"Started at: {s.get('start_time')} | Ended at: {s.get('end_time') or 'Running...'}")
+                            st.caption(f"Started: {s.get('start_time')} | Ended: {s.get('end_time') or '⌛ Running...'}")
 
                         success = s.get("progress_success", 0)
                         failed = s.get("progress_failed", 0)
-                        total_limit = s.get("daily_limit", 1)
-
+                        total_limit = max(s.get("daily_limit", 1), 1)
                         st.progress(min(success / total_limit, 1.0))
 
                         m1, m2, m3 = st.columns(3)
@@ -463,28 +472,27 @@ if 'df' in st.session_state:
                         m2.metric("❌ Failed", failed)
                         m3.metric("🎯 Remaining", max(0, total_limit - success))
 
-                        col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+                        col_btn1, col_btn2 = st.columns([1, 5])
                         if s.get("status") in ["Pending", "Running"]:
-                            if col_btn1.button("🛑 Stop Job", key=f"stop_{s.get('id')}"):
+                            if col_btn1.button("🛑 Stop", key=f"stop_{s.get('id')}"):
                                 scheduler_module.update_schedule(s.get('id'), {"status": "Stopped"})
                                 st.rerun()
-                        if col_btn2.button("🗑️ Delete Job", key=f"del_{s.get('id')}"):
+                        if col_btn2.button("🗑️ Delete", key=f"del_{s.get('id')}"):
                             scheduler_module.delete_schedule(s.get('id'))
                             st.rerun()
 
-                        # Show logs and results for this schedule
                         logs = s.get("logs", [])
                         if logs:
-                            st.write("#### 📜 Live Logs")
-                            log_text = "\n".join([f"[{log['time']}] {log['level'].upper()}: {log['message']}" for log in logs[-30:]])
+                            st.write("**📜 Live Logs**")
+                            log_text = "\n".join(
+                                [f"[{lg['time']}] {lg['level'].upper()}: {lg['message']}" for lg in logs[-30:]]
+                            )
                             st.code(log_text, language=None)
-
-                            # Show table of created audits
-                            import pandas as pd
-                            audit_rows = [{"Store URL": log["store_url"], "Audit Link": log["audit_url"]} for log in logs if log.get("audit_url")]
+                            audit_rows = [{"Store URL": lg["store_url"], "Audit Link": lg["audit_url"]}
+                                         for lg in logs if lg.get("audit_url")]
                             if audit_rows:
-                                st.write("#### 🔗 Created Audits")
-                                st.dataframe(pd.DataFrame(audit_rows))
+                                st.write("**🔗 Created Audits**")
+                                st.dataframe(pd.DataFrame(audit_rows), use_container_width=True)
 
             st.markdown("---")
             st.markdown("### ➕ Add New Schedule")
@@ -493,8 +501,20 @@ if 'df' in st.session_state:
                 with col_f1:
                     target_date = st.date_input("Target Date (PKT)")
                 with col_f2:
-                    # step=60 enables 1-minute intervals in time_input
-                    target_time = st.time_input("Target Time (PKT)", step=60)
+                    st.write("**⏰ Target Time (PKT)**")
+                    tc1, tc2, tc3 = st.columns(3)
+                    with tc1:
+                        hr12 = st.selectbox("Hour", [str(h).zfill(2) for h in range(1, 13)], index=11, key="sch_hr")
+                    with tc2:
+                        mnt = st.selectbox("Min", [str(m).zfill(2) for m in range(0, 60)], index=0, key="sch_min")
+                    with tc3:
+                        ampm = st.selectbox("AM/PM", ["AM", "PM"], index=1, key="sch_ampm")
+                    h24 = int(hr12)
+                    if ampm == "AM":
+                        if h24 == 12: h24 = 0
+                    else:
+                        if h24 != 12: h24 += 12
+                    st.caption(f"Stored as: {h24:02d}:{mnt} ({hr12}:{mnt} {ampm})")
 
                 col_f3, col_f4, col_f5 = st.columns(3)
                 with col_f3:
@@ -510,7 +530,7 @@ if 'df' in st.session_state:
                         st.error("Please select at least one webhook in the sidebar.")
                     else:
                         date_str = target_date.strftime("%Y-%m-%d")
-                        time_str = target_time.strftime("%H:%M")
+                        time_str = f"{h24:02d}:{mnt}"
                         scheduler_module.add_schedule(
                             date_str, 
                             time_str, 
@@ -524,11 +544,9 @@ if 'df' in st.session_state:
 
 # ───────────────────────────────────────────────────────────────────────────
 st.write("---")
-with st.expander("📝 Raw System Logs (click to expand)", expanded=False):
-    if st.button("🔄 Refresh System Logs"):
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "r") as f:
-                log_content = f.read()[-5000:]
-                st.code(log_content, language=None)
-        else:
-            st.warning("No log file found.")
+if st.checkbox("📝 Show Raw System Logs", value=False):
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            st.code(f.read()[-5000:], language=None)
+    else:
+        st.warning("No log file found.")

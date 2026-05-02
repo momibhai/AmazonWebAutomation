@@ -234,17 +234,17 @@ def run_job(sched_id: str):
         webhooks    = job["webhooks"]
         total_rows  = len(df)
 
-        # Build row list — only rows with a Store URL
+        # Build row list — exactly daily_limit valid rows (no over-submission)
         rows_to_process = []
-        for row_idx in range(start_row, start_row + daily_limit * 3):
-            df_idx = row_idx - 2
+        r = start_row
+        while len(rows_to_process) < daily_limit:
+            df_idx = r - 2
             if df_idx < 0 or df_idx >= total_rows:
                 break
             url_val = str(df.iloc[df_idx].get("Store URL", "")).strip()
             if url_val and url_val.lower() not in ("nan", ""):
-                rows_to_process.append((row_idx, df_idx))
-            if len(rows_to_process) >= daily_limit * 2:
-                break  # Enough buffer; webhook failures will handle over-counting
+                rows_to_process.append((r, df_idx))
+            r += 1
 
         if not rows_to_process:
             update_schedule(sched_id, {"status": "Failed"})
@@ -262,12 +262,10 @@ def run_job(sched_id: str):
                 future_to_row = {}
 
                 for i, (r_idx, d_idx) in enumerate(rows_to_process):
-                    # Check stop signal or limit reached
+                    # Only check stop signal — NOT progress_success (webhooks fire async)
                     curr = next((s for s in load_schedules() if s["id"] == sched_id), None)
                     if not curr or curr.get("status") == "Stopped":
                         _append_log(sched_id, "warning", "🛑 Stopped by user.")
-                        break
-                    if curr.get("progress_success", 0) >= daily_limit:
                         break
 
                     webhook_to_use = webhooks[i % len(webhooks)]
