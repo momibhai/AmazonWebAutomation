@@ -140,58 +140,83 @@ def extract_asin_from_url(url):
     if match:
         return match.group(1)
     return None
-def set_delivery_location(driver, zip_code):
+def set_delivery_location(driver, zip_code="10001"):
     """
-    Attempts to set delivery location. Non-blocking - returns True even on failure.
-    Amazon Datacenter IPs often block location popups so we skip gracefully.
+    Sets Amazon delivery location (default 10001 = New York).
+    3-method fallback chain — works on VPS headless Chrome.
+    Always returns True so scraping is never blocked by location failure.
     """
     try:
-        logging.info("Navigating to Amazon homepage...")
+        logging.info(f"Setting Amazon delivery location to zip: {zip_code}")
         driver.get("https://www.amazon.com")
-        time.sleep(random.uniform(2, 3))
-        
-        # Quick check if already set
+        time.sleep(random.uniform(3, 4))
+
+        # Already set?
         try:
-            location_elem = driver.find_element(By.ID, "glow-ingress-line2")
-            current_location = location_elem.text
-            if "New York" in current_location or "10001" in current_location:
-                logging.info("Location already set to New York 10001")
+            loc = driver.find_element(By.ID, "glow-ingress-line2").text
+            if zip_code in loc or "New York" in loc or "10001" in loc:
+                logging.info(f"Location already set: {loc}")
                 return True
-        except:
+        except Exception:
             pass
-        
-        # One quick attempt to set location via JS
+
+        # Method 1: Location popup UI
         try:
-            location_button = WebDriverWait(driver, 5).until(
+            loc_btn = WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "nav-global-location-popover-link"))
             )
-            driver.execute_script("arguments[0].click();", location_button)
-            time.sleep(1.5)
-            
-            zip_input = WebDriverWait(driver, 5).until(
+            driver.execute_script("arguments[0].click();", loc_btn)
+            time.sleep(2)
+            zip_input = WebDriverWait(driver, 8).until(
                 EC.presence_of_element_located((By.ID, "GLUXZipUpdateInput"))
             )
             driver.execute_script("arguments[0].value = '';", zip_input)
             zip_input.send_keys(zip_code)
             time.sleep(0.5)
-            
             for btn_id in ["GLUXZipUpdate", "GLUXZipUpdate-announce"]:
                 try:
-                    btn = driver.find_element(By.ID, btn_id)
-                    driver.execute_script("arguments[0].click();", btn)
+                    driver.execute_script("arguments[0].click();",
+                                         driver.find_element(By.ID, btn_id))
                     break
-                except:
+                except Exception:
                     pass
-            
-            time.sleep(2)
-            logging.info("Location attempt done.")
+            time.sleep(2.5)
+            try:
+                loc = driver.find_element(By.ID, "glow-ingress-line2").text
+                logging.info(f"Location after popup: {loc}")
+            except Exception:
+                pass
+            logging.info("Method 1 (popup) done.")
+            return True
         except Exception as e:
-            logging.warning(f"Location popup not available (likely VPS IP block): {e}")
-            
+            logging.warning(f"Method 1 (popup) failed: {e}")
+
+        # Method 2: Direct AJAX address-change URL
+        try:
+            driver.get(
+                f"https://www.amazon.com/gp/delivery/ajax/address-change.html"
+                f"?locationType=LOCATION_INPUT&zipCode={zip_code}"
+                f"&storeContext=generic&deviceType=web&pageType=Gateway&actionSource=gw"
+            )
+            time.sleep(2)
+            driver.get("https://www.amazon.com")
+            time.sleep(2)
+            try:
+                loc = driver.find_element(By.ID, "glow-ingress-line2").text
+                logging.info(f"Location after AJAX method: {loc}")
+                if zip_code in loc or "New York" in loc:
+                    logging.info(f"Location set via AJAX URL.")
+                    return True
+            except Exception:
+                pass
+        except Exception as e:
+            logging.warning(f"Method 2 (AJAX URL) failed: {e}")
+
+        logging.info("Location set failed — VPS is US (Boston), Amazon serves US content by default.")
+
     except Exception as e:
-        logging.warning(f"Location setup skipped: {e}")
-    
-    # Always return True - location is not critical, scraping works without it
+        logging.warning(f"set_delivery_location outer error: {e}")
+
     return True
 
 def process_store(driver, store_url):
@@ -210,36 +235,47 @@ def process_store(driver, store_url):
             
             product_link = None
             
-            # --- Store Type 1: Seller Profile (/sp?) ---
+            # --- Store Type 1: Seller Profile (/sp?seller=XXXX) ---
+            # Direct approach: build s?me=SELLERID URL instead of clicking "Visit storefront"
             if "/sp?" in store_url:
-                logging.info("Detected Seller Profile. Looking for Storefront link...")
                 try:
-                    try:
-                        storefront_link = WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.PARTIAL_LINK_TEXT, "storefront"))
-                        )
-                        logging.info(f"Clicking storefront link: {storefront_link.text}")
-                        storefront_link.click()
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(store_url)
+                    qs = parse_qs(parsed.query)
+                    seller_id = qs.get("seller", [None])[0]
+
+                    if seller_id:
+                        seller_search_url = f"https://www.amazon.com/s?me={seller_id}&marketplaceID=ATVPDKIKX0DER"
+                        logging.info(f"Seller Profile detected. Navigating directly to: {seller_search_url}")
+                        driver.get(seller_search_url)
                         time.sleep(random.uniform(4, 6))
-                    except:
-                        logging.warning("Could not find 'Visit storefront' link. Trying fallback.")
-                    
-                    try:
-                        WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']"))
-                        )
-                        results = driver.find_elements(By.CSS_SELECTOR, "div[data-component-type='s-search-result']")
-                        for res in results:
-                            if "Sponsored" in res.text:
-                                continue
-                            link_elem = res.find_element(By.CSS_SELECTOR, "h2 a")
-                            product_link = link_elem.get_attribute("href")
-                            if product_link and "/dp/" in product_link:
-                                break
-                    except Exception as e:
-                        logging.warning(f"Error finding product in storefront list: {e}")
+
+                        try:
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']"))
+                            )
+                            results = driver.find_elements(By.CSS_SELECTOR, "div[data-component-type='s-search-result']")
+                            for res in results:
+                                try:
+                                    # Skip sponsored
+                                    sponsored = res.find_elements(By.CSS_SELECTOR, ".puis-sponsored-label-text, .s-sponsored-label-text")
+                                    if sponsored or "Sponsored" in res.text:
+                                        continue
+                                    link_elem = res.find_element(By.CSS_SELECTOR, "h2 a")
+                                    href = link_elem.get_attribute("href")
+                                    if href and "/dp/" in href:
+                                        product_link = href
+                                        logging.info(f"Found product via seller search: {product_link}")
+                                        break
+                                except Exception:
+                                    continue
+                        except Exception as e:
+                            logging.warning(f"No search results found for seller {seller_id}: {e}")
+                    else:
+                        logging.warning(f"Could not extract seller ID from URL: {store_url}")
                 except Exception as e:
                     logging.error(f"Error in Seller Profile flow: {e}")
+
 
             # --- Store Type 2: Brand Store (/stores/) ---
             # Also handles the "Supernal" case which is a Brand Store page.
@@ -365,8 +401,19 @@ def process_store(driver, store_url):
             keyword = get_main_keyword(title)
             logging.info(f"Keyword Extracted: {keyword}")
 
-            if keyword == "None":
-                return my_asin, title, keyword, None, None
+            # If title is Unknown, skip — we can't search competitors without a real title
+            if not title or title == "Unknown":
+                logging.warning(f"Row has no valid product title. Skipping competitor search.")
+                return my_asin, title, None, None, None
+
+            # If keyword extraction failed, use title words as fallback
+            if not keyword or keyword == "None":
+                title_words = [w for w in title.split() if len(w) > 3][:3]
+                keyword = " ".join(title_words) if title_words else None
+                if not keyword:
+                    logging.warning("No usable keyword — skipping competitor search.")
+                    return my_asin, title, None, None, None
+                logging.warning(f"Keyword API failed. Using fallback: '{keyword}'")
 
             # --- Competitor Search ---
             search_url = f"https://www.amazon.com/s?k={keyword.replace(' ', '+')}"
@@ -396,8 +443,10 @@ def process_store(driver, store_url):
             except Exception as e:
                 logging.error(f"Error searching competitors: {e}")
 
-            comp1 = competitors[0] if len(competitors) > 0 else "None"
-            comp2 = competitors[1] if len(competitors) > 1 else "None"
+            comp1 = competitors[0] if len(competitors) > 0 else None
+            comp2 = competitors[1] if len(competitors) > 1 else None
+
+            logging.info(f"Competitors: comp1={comp1}, comp2={comp2}")
 
             # Success!
             return my_asin, title, keyword, comp1, comp2
