@@ -438,6 +438,20 @@ if 'df' in st.session_state:
 
             st.markdown("### 📋 Scheduled Jobs")
 
+            # ── Global emergency controls ─────────────────────────────────────
+            gc1, gc2 = st.columns([1, 2])
+            with gc1:
+                if st.button("🚨 Stop ALL Automation", type="primary", use_container_width=True):
+                    scheduler_module.stop_all_jobs()
+                    st.error("🛑 All running and pending jobs stopped! No more requests will be sent.")
+                    st.rerun()
+            with gc2:
+                if st.button("✅ Reset Stop Flag (allow new jobs)", use_container_width=True):
+                    scheduler_module.reset_global_stop()
+                    st.success("✅ Stop flag cleared — new scheduled jobs will run normally.")
+                    st.rerun()
+            st.divider()
+
             schedules = scheduler_module.load_schedules()
 
             if not schedules:
@@ -484,12 +498,15 @@ if 'df' in st.session_state:
                         m2.metric("❌ Failed", failed)
                         m3.metric("🎯 Remaining", max(0, total_limit - success))
 
-                        col_btn1, col_btn2 = st.columns([1, 5])
+                        col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
                         if s.get("status") in ["Pending", "Running"]:
                             if col_btn1.button("🛑 Stop", key=f"stop_{s.get('id')}"):
                                 scheduler_module.update_schedule(s.get('id'), {"status": "Stopped"})
                                 st.rerun()
-                        if col_btn2.button("🗑️ Delete", key=f"del_{s.get('id')}"):
+                        if col_btn2.button("🧹 Clear Logs", key=f"clrlogs_{s.get('id')}"):
+                            scheduler_module.clear_schedule_logs(s.get('id'))
+                            st.rerun()
+                        if col_btn3.button("🗑️ Delete", key=f"del_{s.get('id')}"):
                             scheduler_module.delete_schedule(s.get('id'))
                             st.rerun()
 
