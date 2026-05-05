@@ -229,9 +229,15 @@ def process_store(driver, store_url):
         try:
             driver.get(store_url)
             time.sleep(random.uniform(4, 6))
-            
-            # Special check for /node/ URLs to skip early if needed, or just let them fail gracefully
-            # User said "agr is trah ka url hai ... skip kr sktay ho", but we'll try first.
+
+            # Early exit if "No results for your search query." is found
+            try:
+                page_text = driver.find_element(By.TAG_NAME, "body").text
+                if "No results for your search query." in page_text or "No results for" in page_text:
+                    logging.warning(f"Store has no results: {store_url}")
+                    return None, None, None, None, None
+            except:
+                pass
             
             product_link = None
             

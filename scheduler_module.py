@@ -161,7 +161,7 @@ def _send_webhook_and_get_url(row_idx: int, webhook_url: str, my_asin: str, comp
         logging.error(f"[Webhook] Row {row_idx} FAILED (no retry): {e}")
     return None
 
-def _scrape_row(row_idx: int, df_idx: int, df: pd.DataFrame, webhook_url: str, sheet, webhook_executor: concurrent.futures.ThreadPoolExecutor):
+def _scrape_row(driver, row_idx: int, df_idx: int, df: pd.DataFrame, webhook_url: str, sheet, webhook_executor: concurrent.futures.ThreadPoolExecutor):
     global _global_stop
     store_url = str(df.iloc[df_idx].get("Store URL", "")).strip()
     if not store_url or store_url.lower() == "nan":
@@ -171,28 +171,27 @@ def _scrape_row(row_idx: int, df_idx: int, df: pd.DataFrame, webhook_url: str, s
 
     max_retries = 2
     for attempt in range(max_retries):
-        driver = None
         try:
-            driver = AmazonStoreScraper.setup_driver(headless=True)
-            AmazonStoreScraper.set_delivery_location(driver, "10001")
             my_asin, title, keyword, comp1, comp2 = AmazonStoreScraper.process_store(driver, store_url)
-
             if my_asin and comp1 and comp2:
                 if _global_stop:
                     return store_url, None, False
                 future = webhook_executor.submit(_send_webhook_and_get_url, row_idx, webhook_url, my_asin, comp1, comp2, sheet)
                 return store_url, future, True
+            else:
+                logging.warning(f"[Scrape] Row {row_idx} missing valid competitors/asin.")
+                break # Exit early if simply missing data, don't retry same driver
         except Exception as e:
             logging.warning(f"[Scrape] Row {row_idx} Retry {attempt+1}/{max_retries} Failed: {e}")
             time.sleep(3)
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+            # Recreate driver on crash
+            try:
+                driver.quit()
+            except: pass
+            driver = AmazonStoreScraper.setup_driver(headless=True)
+            AmazonStoreScraper.set_delivery_location(driver, "10001")
 
-    logging.error(f"[Scrape] Row {row_idx} FAILED completely after {max_retries} attempts.")
+    logging.error(f"[Scrape] Row {row_idx} FAILED completely.")
     return store_url, None, False
 
 
@@ -256,37 +255,47 @@ def run_job(sched_id: str):
                     add_log_to_schedule(sched_id, "warning", "No more rows found in sheet.")
                     break
                 
-                scrape_futures = {}
-                with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as scrape_executor:
-                    for r_idx, d_idx, w_url in batch:
-                        f = scrape_executor.submit(_scrape_row, r_idx, d_idx, df, w_url, sheet_obj, webhook_executor)
-                        scrape_futures[f] = r_idx
+                # Setup single driver for the batch
+                driver = None
+                try:
+                    driver = AmazonStoreScraper.setup_driver(headless=True)
+                    AmazonStoreScraper.set_delivery_location(driver, "10001")
+                except Exception as e:
+                    add_log_to_schedule(sched_id, "error", f"Browser setup failed: {e}")
+                    break
+
+                # Process sequentially using the single driver
+                for r_idx, d_idx, w_url in batch:
+                    if _global_stop:
+                        break
+                    store_url, audit_future, scraped_ok = _scrape_row(driver, r_idx, d_idx, df, w_url, sheet_obj, webhook_executor)
                     
-                    for f in concurrent.futures.as_completed(scrape_futures):
-                        r_idx = scrape_futures[f]
+                    if scraped_ok and audit_future is not None:
                         try:
-                            store_url, audit_future, scraped_ok = f.result()
-                            if scraped_ok and audit_future is not None:
-                                audit_url = audit_future.result(timeout=180)
-                                if audit_url:
-                                    successful += 1
-                                    update_schedule(sched_id, {"progress_success": successful})
-                                    add_log_to_schedule(sched_id, "success", f"✅ Row {r_idx} successful.", store_url, audit_url)
-                                else:
-                                    failed += 1
-                                    update_schedule(sched_id, {"progress_failed": failed})
-                                    add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Webhook failed.", store_url)
+                            audit_url = audit_future.result(timeout=180)
+                            if audit_url:
+                                successful += 1
+                                update_schedule(sched_id, {"progress_success": successful})
+                                add_log_to_schedule(sched_id, "success", f"✅ Row {r_idx} successful.", store_url, audit_url)
                             else:
                                 failed += 1
                                 update_schedule(sched_id, {"progress_failed": failed})
-                                add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Scrape failed.", store_url)
+                                add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Webhook failed.", store_url)
                         except Exception as e:
                             failed += 1
                             update_schedule(sched_id, {"progress_failed": failed})
-                            add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Error: {e}")
-                            
-                        if successful >= daily_limit:
-                            break
+                            add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Webhook Timeout/Error.", store_url)
+                    else:
+                        failed += 1
+                        update_schedule(sched_id, {"progress_failed": failed})
+                        add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Scrape failed.", store_url)
+                        
+                # Cleanup driver after batch
+                if driver:
+                    try:
+                        driver.quit()
+                    except: pass
+
                             
         # Finished
         final_job = next((s for s in load_schedules() if s.get("id") == sched_id), None)
