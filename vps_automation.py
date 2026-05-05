@@ -10,46 +10,41 @@ import GoogleSheetHandler
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 def send_webhook_and_update_sheet(row_idx, webhook_url, my_asin, comp1, comp2, sheet, log_placeholder, ctx=None):
-    """Background task to wait for webhook response and update sheet."""
+    """Background task to wait for webhook response and update sheet. ONE attempt only."""
     if ctx:
         add_script_run_ctx(ctx=ctx)
 
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            success, response_data = WebhookHandler.send_audit_data(webhook_url, my_asin, comp1, comp2)
-            if success and response_data:
-                sheet_url = None
-                if isinstance(response_data, dict):
-                    for key1 in response_data.keys():
-                        if 'docs' in key1.lower():
-                            nested1 = response_data[key1]
-                            if isinstance(nested1, dict):
-                                for key2 in nested1.keys():
-                                    nested2 = nested1[key2]
-                                    if isinstance(nested2, dict):
-                                        for key3 in nested2.keys():
-                                            sheet_url = f"{key1}.{key2}.{key3}"
-                                            break
-                                    break
-                            break
-                    if not sheet_url:
-                        sheet_url = response_data.get('sheet_url', '')
-                        
-                if sheet_url:
-                    GoogleSheetHandler.update_audit_link(sheet, row_idx, sheet_url)
-                    logging.info(f"[VPS Webhook] Row {row_idx} SUCCESS! Audit URL: {sheet_url}")
-                    st.toast(f"✅ Row {row_idx} Audit Ready!")
-                    return # Exit on success
-                else:
-                    raise Exception("Webhook success, but no Audit URL returned.")
+    try:
+        success, response_data = WebhookHandler.send_audit_data(webhook_url, my_asin, comp1, comp2)
+        if success and response_data:
+            sheet_url = None
+            if isinstance(response_data, dict):
+                for key1 in response_data.keys():
+                    if 'docs' in key1.lower():
+                        nested1 = response_data[key1]
+                        if isinstance(nested1, dict):
+                            for key2 in nested1.keys():
+                                nested2 = nested1[key2]
+                                if isinstance(nested2, dict):
+                                    for key3 in nested2.keys():
+                                        sheet_url = f"{key1}.{key2}.{key3}"
+                                        break
+                                break
+                        break
+                if not sheet_url:
+                    sheet_url = response_data.get('sheet_url', '')
+                    
+            if sheet_url:
+                GoogleSheetHandler.update_audit_link(sheet, row_idx, sheet_url)
+                logging.info(f"[VPS Webhook] Row {row_idx} SUCCESS! Audit URL: {sheet_url}")
+                st.toast(f"✅ Row {row_idx} Audit Ready!")
+                return # Exit on success
             else:
-                raise Exception("Failed to send webhook or bad response.")
-        except Exception as e:
-            logging.warning(f"[VPS Webhook] Retry {attempt+1}/{max_retries} for Row {row_idx}: {e}")
-            if attempt == max_retries - 1:
-                logging.error(f"[VPS Webhook] Final Error on Row {row_idx} after {max_retries} attempts: {e}")
-            time.sleep(5)
+                logging.error(f"[VPS Webhook] Row {row_idx} Webhook success, but no Audit URL returned.")
+        else:
+            logging.error(f"[VPS Webhook] Row {row_idx} Failed to send webhook or bad response.")
+    except Exception as e:
+        logging.error(f"[VPS Webhook] Final Error on Row {row_idx}: {e}")
 
 def process_single_row(row_idx, df_idx, df, webhook_url, sheet, webhook_executor, log_placeholder, stop_event=None, ctx=None):
     """Processes a single row for VPS automation. Frees up quickly after scraping."""
@@ -107,7 +102,14 @@ def run_vps_batch(df, start_row, end_row, concurrency, webhooks, sheet, log_plac
     for row_idx in range(start_row, end_row + 1):
         df_idx = row_idx - 2
         if 0 <= df_idx < len(df):
-            rows_to_process.append((row_idx, df_idx))
+            url_val = str(df.iloc[df_idx].get("Store URL", "")).strip()
+            if url_val and url_val.lower() not in ("nan", ""):
+                # Check Audit Link
+                audit_existing = str(df.iloc[df_idx].get("Audit Link", "")).strip()
+                if audit_existing and audit_existing.lower() not in ("nan", "", "none"):
+                    log_placeholder.info(f"⏭️ Row {row_idx} skipped — Audit Link already exists.")
+                else:
+                    rows_to_process.append((row_idx, df_idx))
             
     total = len(rows_to_process)
     if total == 0:

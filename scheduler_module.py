@@ -169,27 +169,32 @@ def _scrape_row(row_idx: int, df_idx: int, df: pd.DataFrame, webhook_url: str, s
     if _global_stop:
         return store_url, None, False
 
-    driver = None
-    try:
-        driver = AmazonStoreScraper.setup_driver(headless=True)
-        AmazonStoreScraper.set_delivery_location(driver, "10001")
-        my_asin, title, keyword, comp1, comp2 = AmazonStoreScraper.process_store(driver, store_url)
+    max_retries = 2
+    for attempt in range(max_retries):
+        driver = None
+        try:
+            driver = AmazonStoreScraper.setup_driver(headless=True)
+            AmazonStoreScraper.set_delivery_location(driver, "10001")
+            my_asin, title, keyword, comp1, comp2 = AmazonStoreScraper.process_store(driver, store_url)
 
-        if my_asin and comp1 and comp2:
-            if _global_stop:
-                return store_url, None, False
-            future = webhook_executor.submit(_send_webhook_and_get_url, row_idx, webhook_url, my_asin, comp1, comp2, sheet)
-            return store_url, future, True
-    except Exception as e:
-        logging.error(f"[Scrape] Row {row_idx} FAILED (no retry): {e}")
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            if my_asin and comp1 and comp2:
+                if _global_stop:
+                    return store_url, None, False
+                future = webhook_executor.submit(_send_webhook_and_get_url, row_idx, webhook_url, my_asin, comp1, comp2, sheet)
+                return store_url, future, True
+        except Exception as e:
+            logging.warning(f"[Scrape] Row {row_idx} Retry {attempt+1}/{max_retries} Failed: {e}")
+            time.sleep(3)
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
 
+    logging.error(f"[Scrape] Row {row_idx} FAILED completely after {max_retries} attempts.")
     return store_url, None, False
+
 
 def run_job(sched_id: str):
     """Executes a single scheduled job from start to finish."""
