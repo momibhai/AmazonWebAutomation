@@ -270,8 +270,14 @@ if 'df' in st.session_state:
                                     if df_idx < 0 or df_idx >= len(df):
                                         continue # Out of bounds
                                         
-                                    current_url = df.iloc[df_idx]['Store URL'] # Adjust Column Name if needed
-                                    if not current_url or pd.isna(current_url):
+                                    current_url = str(df.iloc[df_idx].get('Store URL', '')).strip()
+                                    if not current_url or current_url.lower() in ("nan", ""):
+                                        continue
+
+                                    # Check Audit Link
+                                    audit_existing = str(df.iloc[df_idx].get("Audit Link", "")).strip()
+                                    if audit_existing and audit_existing.lower() not in ("nan", "", "none"):
+                                        status_container.info(f"⏭️ Row {row_idx} skipped — Audit Link already exists.")
                                         continue
 
                                     # Select webhook to use based on index (Round Robin distribution)
@@ -295,41 +301,36 @@ if 'df' in st.session_state:
                                                     # Dispatch webhook to background to avoid 2 minute wait
                                                     def bg_webhook_task(row_num, w_url, a, c1, c2, s_obj, log):
                                                         add_script_run_ctx(ctx=ctx)
-                                                        for w_attempt in range(max_retries):
-                                                            try:
-                                                                success, response_data = WebhookHandler.send_audit_data(w_url, a, c1, c2)
-                                                                if success and response_data:
-                                                                    sheet_url = None
-                                                                    if isinstance(response_data, dict):
-                                                                        for key1 in response_data.keys():
-                                                                            if 'docs' in key1.lower():
-                                                                                nested1 = response_data[key1]
-                                                                                if isinstance(nested1, dict):
-                                                                                    for key2 in nested1.keys():
-                                                                                        nested2 = nested1[key2]
-                                                                                        if isinstance(nested2, dict):
-                                                                                            for key3 in nested2.keys():
-                                                                                                sheet_url = f"{key1}.{key2}.{key3}"
-                                                                                                break
-                                                                                        break
-                                                                                break
-                                                                        if not sheet_url:
-                                                                            sheet_url = response_data.get('sheet_url', '')
-                                                                    
-                                                                    if sheet_url:
-                                                                        GoogleSheetHandler.update_audit_link(s_obj, row_num, sheet_url)
-                                                                        log.success(f"📝 Updated Row {row_num} with Audit URL")
-                                                                        return # Exit on success
-                                                                    else:
-                                                                        raise Exception("Could not extract sheet URL from response")
+                                                        try:
+                                                            success, response_data = WebhookHandler.send_audit_data(w_url, a, c1, c2)
+                                                            if success and response_data:
+                                                                sheet_url = None
+                                                                if isinstance(response_data, dict):
+                                                                    for key1 in response_data.keys():
+                                                                        if 'docs' in key1.lower():
+                                                                            nested1 = response_data[key1]
+                                                                            if isinstance(nested1, dict):
+                                                                                for key2 in nested1.keys():
+                                                                                    nested2 = nested1[key2]
+                                                                                    if isinstance(nested2, dict):
+                                                                                        for key3 in nested2.keys():
+                                                                                            sheet_url = f"{key1}.{key2}.{key3}"
+                                                                                            break
+                                                                                    break
+                                                                            break
+                                                                    if not sheet_url:
+                                                                        sheet_url = response_data.get('sheet_url', '')
+                                                                
+                                                                if sheet_url:
+                                                                    GoogleSheetHandler.update_audit_link(s_obj, row_num, sheet_url)
+                                                                    log.success(f"📝 Updated Row {row_num} with Audit URL")
+                                                                    return # Exit on success
                                                                 else:
-                                                                    raise Exception(f"Failed to send webhook to {w_url}")
-                                                            except Exception as we:
-                                                                log.warning(f"⚠️ Webhook Retry {w_attempt+1}/{max_retries} for Row {row_num}: {we}")
-                                                                if w_attempt == max_retries - 1:
-                                                                    log.error(f"❌ Final Webhook Error on Row {row_num}: {we}")
-                                                                import time
-                                                                time.sleep(5)
+                                                                    log.error(f"❌ Row {row_num}: Could not extract sheet URL")
+                                                            else:
+                                                                log.error(f"❌ Row {row_num}: Failed to send webhook")
+                                                        except Exception as we:
+                                                            log.error(f"❌ Final Webhook Error on Row {row_num}: {we}")
                                                     
                                                     webhook_executor.submit(bg_webhook_task, row_idx, webhook_to_use, my_asin, comp1, comp2, sheet_obj, log_area)
                                                     st.toast(f"⏳ {my_asin} Scraped! Webhook pushing to background...")
@@ -345,7 +346,9 @@ if 'df' in st.session_state:
                                             import time
                                             time.sleep(3)
                                             # Refresh driver on retry
-                                            driver.quit()
+                                            try:
+                                                driver.quit()
+                                            except: pass
                                             driver = AmazonStoreScraper.setup_driver(headless=True)
                                             AmazonStoreScraper.set_delivery_location(driver, "10001")
                                         

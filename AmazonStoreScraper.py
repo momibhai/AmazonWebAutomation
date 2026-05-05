@@ -330,9 +330,8 @@ def process_store(driver, store_url):
                             if not h: continue
                             if any(x in h for x in ["customerReviews", "offer-listing", "qa", "questions", "signin", "review", "vote", "footer", "bestsellers"]): continue
                             
-                            # STANDARD LINKS must be displayed to be clicked, usually.
-                            if l.is_displayed(): 
-                                return h
+                            # Just return the URL, whether visible or not.
+                            return h
                     except: pass
                     
                     # Strategy D: Quick Look Buttons (New - Observation only for now)
