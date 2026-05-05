@@ -77,6 +77,31 @@ def delete_schedule(sched_id: str):
     schedules = [s for s in schedules if s.get("id") != sched_id]
     save_schedules(schedules)
 
+# ── Global stop flag ────────────────────────────────────────────────────────────
+_global_stop: bool = False
+
+def stop_all_jobs():
+    global _global_stop
+    _global_stop = True
+    schedules = load_schedules()
+    for s in schedules:
+        if s.get("status") in ("Pending", "Running"):
+            s["status"] = "Stopped"
+    save_schedules(schedules)
+    logging.info("[Scheduler] STOP ALL — all jobs halted.")
+
+def reset_global_stop():
+    global _global_stop
+    _global_stop = False
+
+def clear_schedule_logs(sched_id: str):
+    schedules = load_schedules()
+    for s in schedules:
+        if s.get("id") == sched_id:
+            s["logs"] = []
+            break
+    save_schedules(schedules)
+
 def update_schedule(sched_id: str, updates: dict):
     schedules = load_schedules()
     for s in schedules:
@@ -109,55 +134,60 @@ def add_log_to_schedule(sched_id: str, level: str, message: str, store_url: str 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _send_webhook_and_get_url(row_idx: int, webhook_url: str, my_asin: str, comp1: str, comp2: str, sheet) -> str | None:
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            success, response_data = WebhookHandler.send_audit_data(webhook_url, my_asin, comp1, comp2)
-            if success and response_data:
-                sheet_url = None
-                if isinstance(response_data, dict):
-                    for k1, v1 in response_data.items():
-                        if "docs" in k1.lower() and isinstance(v1, dict):
-                            for k2, v2 in v1.items():
-                                if isinstance(v2, dict):
-                                    for k3 in v2:
-                                        sheet_url = f"{k1}.{k2}.{k3}"
-                                        break
+    """ONE attempt only — no retry to prevent n8n duplicate sheet creation."""
+    global _global_stop
+    if _global_stop:
+        return None
+    try:
+        success, response_data = WebhookHandler.send_audit_data(webhook_url, my_asin, comp1, comp2)
+        if success and response_data:
+            sheet_url = None
+            if isinstance(response_data, dict):
+                for k1, v1 in response_data.items():
+                    if "docs" in k1.lower() and isinstance(v1, dict):
+                        for k2, v2 in v1.items():
+                            if isinstance(v2, dict):
+                                for k3 in v2:
+                                    sheet_url = f"{k1}.{k2}.{k3}"
                                     break
-                            break
-                    if not sheet_url:
-                        sheet_url = response_data.get("sheet_url", "")
-                
-                if sheet_url:
-                    GoogleSheetHandler.update_audit_link(sheet, row_idx, sheet_url)
-                    return sheet_url
-        except Exception:
-            time.sleep(5)
+                                break
+                        break
+                if not sheet_url:
+                    sheet_url = response_data.get("sheet_url", "")
+            if sheet_url:
+                GoogleSheetHandler.update_audit_link(sheet, row_idx, sheet_url)
+                return sheet_url
+    except Exception as e:
+        logging.error(f"[Webhook] Row {row_idx} FAILED (no retry): {e}")
     return None
 
 def _scrape_row(row_idx: int, df_idx: int, df: pd.DataFrame, webhook_url: str, sheet, webhook_executor: concurrent.futures.ThreadPoolExecutor):
+    global _global_stop
     store_url = str(df.iloc[df_idx].get("Store URL", "")).strip()
     if not store_url or store_url.lower() == "nan":
         return store_url, None, False
+    if _global_stop:
+        return store_url, None, False
 
     driver = None
-    for attempt in range(2):
-        try:
-            driver = AmazonStoreScraper.setup_driver(headless=True)
-            AmazonStoreScraper.set_delivery_location(driver, "10001")
-            my_asin, title, keyword, comp1, comp2 = AmazonStoreScraper.process_store(driver, store_url)
+    try:
+        driver = AmazonStoreScraper.setup_driver(headless=True)
+        AmazonStoreScraper.set_delivery_location(driver, "10001")
+        my_asin, title, keyword, comp1, comp2 = AmazonStoreScraper.process_store(driver, store_url)
 
-            if my_asin and comp1 and comp2:
-                future = webhook_executor.submit(_send_webhook_and_get_url, row_idx, webhook_url, my_asin, comp1, comp2, sheet)
-                return store_url, future, True
-        except Exception:
-            time.sleep(3)
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except:
-                    pass
+        if my_asin and comp1 and comp2:
+            if _global_stop:
+                return store_url, None, False
+            future = webhook_executor.submit(_send_webhook_and_get_url, row_idx, webhook_url, my_asin, comp1, comp2, sheet)
+            return store_url, future, True
+    except Exception as e:
+        logging.error(f"[Scrape] Row {row_idx} FAILED (no retry): {e}")
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
     return store_url, None, False
 
@@ -200,14 +230,20 @@ def run_job(sched_id: str):
                 
                 batch = []
                 tmp_row = current_row
-                while len(batch) < concurrency:
+                while len(batch) < concurrency and (successful + len(batch)) < daily_limit:
                     df_idx = tmp_row - 2
                     if df_idx < 0 or df_idx >= total_df_rows:
                         break
-                    url_val = df.iloc[df_idx].get("Store URL", "")
-                    if url_val and str(url_val).strip() not in ("", "nan"):
-                        batch.append((tmp_row, df_idx, webhooks[webhook_idx % len(webhooks)]))
-                        webhook_idx += 1
+                    url_val = str(df.iloc[df_idx].get("Store URL", "")).strip()
+                    if url_val and url_val.lower() not in ("", "nan"):
+                        # Skip if Audit Link already exists
+                        audit_existing = str(df.iloc[df_idx].get("Audit Link", "")).strip()
+                        if audit_existing and audit_existing.lower() not in ("", "nan", "none"):
+                            add_log_to_schedule(sched_id, "info",
+                                f"⏭️ Row {tmp_row} skipped — Audit Link already exists.", url_val, audit_existing)
+                        else:
+                            batch.append((tmp_row, df_idx, webhooks[webhook_idx % len(webhooks)]))
+                            webhook_idx += 1
                     tmp_row += 1
                 
                 current_row = tmp_row
@@ -252,6 +288,24 @@ def run_job(sched_id: str):
         if final_job and final_job.get("status") != "Stopped":
             update_schedule(sched_id, {"status": "Completed", "end_time": datetime.now(PKT).strftime("%I:%M %p")})
             add_log_to_schedule(sched_id, "info", f"🎯 Schedule Completed! Success: {successful}, Failed: {failed}")
+
+            # ── Repeat Daily: auto-schedule next day ──
+            if job.get("repeat_daily"):
+                from datetime import date, timedelta
+                next_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+                next_time_disp = datetime.strptime(job["target_time"], "%H:%M").strftime("%I:%M %p")
+                add_schedule(
+                    target_date=next_date,
+                    target_time=job["target_time"],
+                    start_row=current_row,
+                    daily_limit=job["daily_limit"],
+                    concurrency=job["concurrency"],
+                    webhooks=job["webhooks"],
+                    repeat_daily=True
+                )
+                update_schedule(sched_id, {"next_run": f"{next_date} at {next_time_disp} PKT"})
+                add_log_to_schedule(sched_id, "info",
+                    f"🔁 Next job scheduled: {next_date} at {next_time_disp} PKT. Start row: {current_row}")
         else:
             update_schedule(sched_id, {"end_time": datetime.now(PKT).strftime("%I:%M %p")})
             
@@ -287,6 +341,33 @@ def _background_scheduler_loop():
         time.sleep(30)
 
 _daemon_started = False
+_fired_job_ids: set = set()
+
+def _background_scheduler_loop():
+    global _fired_job_ids
+    while True:
+        try:
+            now = datetime.now(PKT)
+            current_date_str = now.strftime("%Y-%m-%d")
+            for sched in load_schedules():
+                if sched.get("status") == "Pending" and sched["id"] not in _fired_job_ids:
+                    t_date = sched.get("target_date", "")
+                    t_time = sched.get("target_time", "")
+                    try:
+                        target_dt = PKT.localize(
+                            datetime.strptime(f"{t_date} {t_time}", "%Y-%m-%d %H:%M")
+                        )
+                        diff = (now - target_dt).total_seconds()
+                        if 0 <= diff <= 600:  # Fire within 10-min window after scheduled time
+                            logging.info(f"[Daemon] Triggering job {sched['id']} scheduled at {t_time}")
+                            _fired_job_ids.add(sched["id"])
+                            threading.Thread(target=run_job, args=(sched["id"],), daemon=True).start()
+                    except Exception as e:
+                        logging.warning(f"[Daemon] Time parse error for {sched['id']}: {e}")
+        except Exception as e:
+            logging.error(f"Scheduler daemon error: {e}")
+        time.sleep(30)
+
 def start_daemon_if_needed():
     global _daemon_started
     if not _daemon_started:
