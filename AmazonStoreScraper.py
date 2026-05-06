@@ -256,6 +256,15 @@ def process_store(driver, store_url):
                         driver.get(seller_search_url)
                         time.sleep(random.uniform(4, 6))
 
+                        # Check for 'No results' on seller search page
+                        try:
+                            page_text = driver.find_element(By.TAG_NAME, "body").text
+                            if "No results for your search query" in page_text or "No results for" in page_text:
+                                logging.warning(f"Seller search has no results: {seller_search_url}")
+                                return None, None, None, None, None
+                        except:
+                            pass
+
                         try:
                             WebDriverWait(driver, 10).until(
                                 EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']"))

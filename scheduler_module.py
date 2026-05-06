@@ -133,33 +133,7 @@ def add_log_to_schedule(sched_id: str, level: str, message: str, store_url: str 
 #  Worker Logic (Completely independent of Streamlit UI)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _send_webhook_and_get_url(row_idx: int, webhook_url: str, my_asin: str, comp1: str, comp2: str, sheet) -> str | None:
-    """ONE attempt only — no retry to prevent n8n duplicate sheet creation."""
-    global _global_stop
-    if _global_stop:
-        return None
-    try:
-        success, response_data = WebhookHandler.send_audit_data(webhook_url, my_asin, comp1, comp2)
-        if success and response_data:
-            sheet_url = None
-            if isinstance(response_data, dict):
-                for k1, v1 in response_data.items():
-                    if "docs" in k1.lower() and isinstance(v1, dict):
-                        for k2, v2 in v1.items():
-                            if isinstance(v2, dict):
-                                for k3 in v2:
-                                    sheet_url = f"{k1}.{k2}.{k3}"
-                                    break
-                                break
-                        break
-                if not sheet_url:
-                    sheet_url = response_data.get("sheet_url", "")
-            if sheet_url:
-                GoogleSheetHandler.update_audit_link(sheet, row_idx, sheet_url)
-                return sheet_url
-    except Exception as e:
-        logging.error(f"[Webhook] Row {row_idx} FAILED (no retry): {e}")
-    return None
+# Old function removed. Background webhook logic moved inside run_job.
 
 def _scrape_row(driver, row_idx: int, df_idx: int, df: pd.DataFrame, webhook_url: str, sheet, webhook_executor: concurrent.futures.ThreadPoolExecutor):
     global _global_stop
@@ -176,8 +150,7 @@ def _scrape_row(driver, row_idx: int, df_idx: int, df: pd.DataFrame, webhook_url
             if my_asin and comp1 and comp2:
                 if _global_stop:
                     return store_url, None, False
-                future = webhook_executor.submit(_send_webhook_and_get_url, row_idx, webhook_url, my_asin, comp1, comp2, sheet)
-                return store_url, future, True
+                return store_url, my_asin, comp1, comp2, True
             else:
                 logging.warning(f"[Scrape] Row {row_idx} missing valid competitors/asin.")
                 break # Exit early if simply missing data, don't retry same driver
@@ -192,7 +165,7 @@ def _scrape_row(driver, row_idx: int, df_idx: int, df: pd.DataFrame, webhook_url
             AmazonStoreScraper.set_delivery_location(driver, "10001")
 
     logging.error(f"[Scrape] Row {row_idx} FAILED completely.")
-    return store_url, None, False
+    return store_url, None, None, None, False
 
 
 def run_job(sched_id: str):
@@ -219,13 +192,13 @@ def run_job(sched_id: str):
         webhooks = job["webhooks"]
         
         current_row = start_row
-        successful = 0
-        failed = 0
+        stats = {"success": 0, "failed": 0}
+        queued_count = 0
         total_df_rows = len(df)
         webhook_idx = 0
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=100) as webhook_executor:
-            while successful < daily_limit:
+            while queued_count < daily_limit:
                 # Check if user stopped it from UI
                 curr_job = next((s for s in load_schedules() if s.get("id") == sched_id), None)
                 if not curr_job or curr_job.get("status") == "Stopped":
@@ -234,7 +207,7 @@ def run_job(sched_id: str):
                 
                 batch = []
                 tmp_row = current_row
-                while len(batch) < concurrency and (successful + len(batch)) < daily_limit:
+                while len(batch) < concurrency and queued_count < daily_limit:
                     df_idx = tmp_row - 2
                     if df_idx < 0 or df_idx >= total_df_rows:
                         break
@@ -268,26 +241,48 @@ def run_job(sched_id: str):
                 for r_idx, d_idx, w_url in batch:
                     if _global_stop:
                         break
-                    store_url, audit_future, scraped_ok = _scrape_row(driver, r_idx, d_idx, df, w_url, sheet_obj, webhook_executor)
+                    store_url, a_asin, c1, c2, scraped_ok = _scrape_row(driver, r_idx, d_idx, df, w_url, sheet_obj, webhook_executor)
                     
-                    if scraped_ok and audit_future is not None:
-                        try:
-                            audit_url = audit_future.result(timeout=180)
-                            if audit_url:
-                                successful += 1
-                                update_schedule(sched_id, {"progress_success": successful})
-                                add_log_to_schedule(sched_id, "success", f"✅ Row {r_idx} successful.", store_url, audit_url)
-                            else:
-                                failed += 1
-                                update_schedule(sched_id, {"progress_failed": failed})
-                                add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Webhook failed.", store_url)
-                        except Exception as e:
-                            failed += 1
-                            update_schedule(sched_id, {"progress_failed": failed})
-                            add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Webhook Timeout/Error.", store_url)
+                    if scraped_ok and a_asin:
+                        queued_count += 1
+                        def bg_webhook_task(row_num, w_url_inner, a, cp1, cp2, s_obj, st_url, s_id):
+                            try:
+                                success, response_data = WebhookHandler.send_audit_data(w_url_inner, a, cp1, cp2)
+                                sheet_url = None
+                                if success and response_data:
+                                    if isinstance(response_data, dict):
+                                        for k1, v1 in response_data.items():
+                                            if "docs" in k1.lower() and isinstance(v1, dict):
+                                                for k2, v2 in v1.items():
+                                                    if isinstance(v2, dict):
+                                                        for k3 in v2:
+                                                            sheet_url = f"{k1}.{k2}.{k3}"
+                                                            break
+                                                        break
+                                                break
+                                        if not sheet_url:
+                                            sheet_url = response_data.get("sheet_url", "")
+                                    
+                                    if sheet_url:
+                                        GoogleSheetHandler.update_audit_link(s_obj, row_num, sheet_url)
+                                        stats["success"] += 1
+                                        update_schedule(s_id, {"progress_success": stats["success"]})
+                                        add_log_to_schedule(s_id, "success", f"✅ Row {row_num} successful.", st_url, sheet_url)
+                                        return
+                                
+                                stats["failed"] += 1
+                                update_schedule(s_id, {"progress_failed": stats["failed"]})
+                                add_log_to_schedule(s_id, "error", f"❌ Row {row_num} Webhook failed.", st_url)
+                            except Exception as we:
+                                stats["failed"] += 1
+                                update_schedule(s_id, {"progress_failed": stats["failed"]})
+                                add_log_to_schedule(s_id, "error", f"❌ Row {row_num} Webhook Error.", st_url)
+                        
+                        add_log_to_schedule(sched_id, "info", f"⏳ Row {r_idx} Scraped! Webhook queued.", store_url)
+                        webhook_executor.submit(bg_webhook_task, r_idx, w_url, a_asin, c1, c2, sheet_obj, store_url, sched_id)
                     else:
-                        failed += 1
-                        update_schedule(sched_id, {"progress_failed": failed})
+                        stats["failed"] += 1
+                        update_schedule(sched_id, {"progress_failed": stats["failed"]})
                         add_log_to_schedule(sched_id, "error", f"❌ Row {r_idx} Scrape failed.", store_url)
                         
                 # Cleanup driver after batch
