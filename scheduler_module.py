@@ -296,7 +296,7 @@ def run_job(sched_id: str):
         final_job = next((s for s in load_schedules() if s.get("id") == sched_id), None)
         if final_job and final_job.get("status") != "Stopped":
             update_schedule(sched_id, {"status": "Completed", "end_time": datetime.now(PKT).strftime("%I:%M %p")})
-            add_log_to_schedule(sched_id, "info", f"🎯 Schedule Completed! Success: {successful}, Failed: {failed}")
+            add_log_to_schedule(sched_id, "info", f"🎯 Schedule Completed! Success: {stats['success']}, Failed: {stats['failed']}")
 
             # ── Repeat Daily: auto-schedule next day ──
             if job.get("repeat_daily"):
